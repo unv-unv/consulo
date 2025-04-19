@@ -33,7 +33,7 @@ import jakarta.inject.Inject;
 import javax.swing.*;
 import javax.swing.border.CompoundBorder;
 import java.awt.*;
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,29 +71,21 @@ public class EarlyAccessProgramConfigurable implements ApplicationConfigurable, 
         return IdeLocalize.eapConfigurableName().get();
     }
 
-    @RequiredUIAccess
     @Nullable
     @Override
+    @RequiredUIAccess
     public JComponent createComponent() {
         myCheckBoxes = new LinkedHashMap<>();
 
         JPanel panel = new JPanel(new VerticalFlowLayout());
 
-        List<EarlyAccessProgramDescriptor> extensions =
-            new ArrayList<>(EarlyAccessProgramDescriptor.EP_NAME.getExtensionList(myApplication));
-        extensions.sort((o1, o2) -> {
-            if (o1.isAvailable() && !o2.isAvailable()) {
-                return -1;
-            }
-            else if (o2.isAvailable() && !o1.isAvailable()) {
-                return 1;
-            }
-            return o1.getName().compareToIgnoreCase(o2.getName());
-        });
+        List<EarlyAccessProgramDescription> descriptions = myApplication.getExtensionPoint(EarlyAccessProgramDescriptor.class)
+            .collectExtensionsToListSafe(EarlyAccessProgramDescription::new);
+        Collections.sort(descriptions);
 
         EarlyAccessProgramManager manager = ConfigurableSession.get().getOrCopy(myApplication, EarlyAccessProgramManager.class);
 
-        for (EarlyAccessProgramDescriptor descriptor : extensions) {
+        for (EarlyAccessProgramDescription description : descriptions) {
             JPanel eapPanel = new JPanel(new VerticalFlowLayout(VerticalFlowLayout.TOP, true, true)) {
                 @Override
                 public Dimension getPreferredSize() {
@@ -101,18 +93,18 @@ public class EarlyAccessProgramConfigurable implements ApplicationConfigurable, 
                     return new Dimension(Math.min(size.width, 200), size.height);
                 }
             };
-            eapPanel.setEnabled(descriptor.isAvailable());
+            eapPanel.setEnabled(description.available());
 
             JPanel topPanel = new JPanel(new BorderLayout());
-            JCheckBox checkBox = new JCheckBox(descriptor.getName());
-            checkBox.setEnabled(descriptor.isAvailable());
-            checkBox.addItemListener(e -> manager.setState(descriptor.getClass(), checkBox.isSelected()));
-            myCheckBoxes.put(descriptor, checkBox);
+            JCheckBox checkBox = new JCheckBox(description.name());
+            checkBox.setEnabled(description.available());
+            checkBox.addItemListener(e -> manager.setState(description.clazz(), checkBox.isSelected()));
+            myCheckBoxes.put(description.descriptor(), checkBox);
 
-            checkBox.setSelected(manager.getState(descriptor.getClass()));
+            checkBox.setSelected(manager.getState(description.clazz()));
             topPanel.add(checkBox, BorderLayout.WEST);
 
-            if (descriptor.isRestartRequired()) {
+            if (description.restartRequired()) {
                 JBLabel comp = new JBLabel("Restart required");
                 comp.setForeground(JBColor.GRAY);
                 topPanel.add(comp, BorderLayout.EAST);
@@ -121,15 +113,13 @@ public class EarlyAccessProgramConfigurable implements ApplicationConfigurable, 
             eapPanel.add(topPanel);
             eapPanel.setBorder(new CustomLineBorder(0, 0, 1, 0));
 
-            String description = StringUtil.notNullize(descriptor.getDescription());
             JTextPane textPane = new JTextPane();
-            textPane.setText(description);
+            textPane.setText(description.decription());
             textPane.setEditable(false);
-            if (!descriptor.isAvailable()) {
+            if (!description.available()) {
                 textPane.setForeground(JBColor.GRAY);
             }
             eapPanel.add(textPane);
-
 
             panel.add(eapPanel);
         }
@@ -164,15 +154,8 @@ public class EarlyAccessProgramConfigurable implements ApplicationConfigurable, 
     @Override
     public boolean isModified() {
         EarlyAccessProgramManager manager = EarlyAccessProgramManager.getInstance();
-
-        for (EarlyAccessProgramDescriptor descriptor : EarlyAccessProgramDescriptor.EP_NAME.getExtensionList(myApplication)) {
-            JCheckBox box = myCheckBoxes.get(descriptor);
-
-            if (box.isSelected() != manager.getState(descriptor.getClass())) {
-                return true;
-            }
-        }
-        return false;
+        return myApplication.getExtensionPoint(EarlyAccessProgramDescriptor.class)
+            .anyMatchSafe(descriptor -> myCheckBoxes.get(descriptor).isSelected() != manager.getState(descriptor.getClass()));
     }
 
     @RequiredUIAccess
@@ -185,11 +168,35 @@ public class EarlyAccessProgramConfigurable implements ApplicationConfigurable, 
     @Override
     public void reset() {
         EarlyAccessProgramManager manager = EarlyAccessProgramManager.getInstance();
+        myApplication.getExtensionPoint(EarlyAccessProgramDescriptor.class)
+            .forEach(descriptor -> myCheckBoxes.get(descriptor).setSelected(manager.getState(descriptor.getClass())));
+    }
 
-        for (EarlyAccessProgramDescriptor descriptor : EarlyAccessProgramDescriptor.EP_NAME.getExtensionList(myApplication)) {
-            JCheckBox box = myCheckBoxes.get(descriptor);
+    private static record EarlyAccessProgramDescription(
+        boolean available,
+        @Nonnull String name,
+        @Nonnull String decription,
+        @Nonnull Class<? extends EarlyAccessProgramDescriptor> clazz,
+        boolean restartRequired,
+        @Nonnull EarlyAccessProgramDescriptor descriptor
+    ) implements Comparable<EarlyAccessProgramDescription> {
+        public EarlyAccessProgramDescription(@Nonnull EarlyAccessProgramDescriptor descriptor) {
+            this(
+                descriptor.isAvailable(),
+                descriptor.getName(),
+                StringUtil.notNullize(descriptor.getDescription()),
+                descriptor.getClass(),
+                descriptor.isRestartRequired(),
+                descriptor
+            );
+        }
 
-            box.setSelected(manager.getState(descriptor.getClass()));
+        @Override
+        public int compareTo(@Nonnull EarlyAccessProgramDescription o) {
+            if (available == o.available) {
+                return name.compareToIgnoreCase(o.name);
+            }
+            return available ? -1 : +1;
         }
     }
 }
